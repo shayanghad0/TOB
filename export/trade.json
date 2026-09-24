@@ -1,0 +1,48 @@
+[
+  {
+    "trade_id": "a780ac26",
+    "symbol": "XAUUSD",
+    "lot": 0.02,
+    "direction": "sell",
+    "zone_price": 4296.12,
+    "zone_type": "bearish_ob",
+    "zone_tfs": [
+      "M30"
+    ],
+    "zone_score": 130,
+    "zone_touches": 0,
+    "ob_high": 4296.12,
+    "ob_low": 4286.07,
+    "ob_body_ratio": 0.125,
+    "imb_size": 5.07,
+    "imb_ratio": 4.02,
+    "rules_passed": [
+      "near_sr",
+      "near_fz",
+      "broke_bms",
+      "imb_2x",
+      "broke_opp_ob",
+      "ssr_position"
+    ],
+    "signal_rsi": 32.0,
+    "signal_trend_m30": "bear",
+    "signal_trend_m15": "bear",
+    "signal_atr_m30": 11.43,
+    "order_ticket": 58608848053,
+    "order_placed_at": "2026-09-24T10:08:38.952295+00:00",
+    "order_type": "SELL LIMIT",
+    "limit_price": 4296.12,
+    "tp_price": 4273.26,
+    "sl_price": 4307.55,
+    "position_ticket": null,
+    "entry_price": null,
+    "entry_time": null,
+    "exit_price": null,
+    "exit_time": null,
+    "exit_reason": null,
+    "pnl": null,
+    "ohlcv_file": "ohlcv/a780ac26.json",
+    "created_at": "2026-09-24T10:08:38.699565+00:00",
+    "status": "waiting_fill"
+  }
+]

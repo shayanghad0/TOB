@@ -319,8 +319,9 @@ def get_symbol_info():
 
 def get_filling_mode(si):
     m = si.filling_mode
-    if m & 1: return mt5.ORDER_FILLING_FOK
-    if m & 2: return mt5.ORDER_FILLING_IOC
+    if m & mt5.ORDER_FILLING_RETURN: return mt5.ORDER_FILLING_RETURN
+    if m & mt5.ORDER_FILLING_IOC:   return mt5.ORDER_FILLING_IOC
+    if m & mt5.ORDER_FILLING_FOK:   return mt5.ORDER_FILLING_FOK
     return mt5.ORDER_FILLING_RETURN
 
 
@@ -971,7 +972,7 @@ def place_limit_order(signal: dict, sym_info, trade_id: str):
         if raw_px < bid + min_dist:
             log(f"Skip: SELL OB {raw_px:.2f} inside min_dist of bid {bid:.2f}", "yellow")
             return None, None
-        target      = raw_px - LIMIT_FILL_BUFFER
+        target      = raw_px
         min_px      = ceil_price(bid + min_dist, digits)
         if target < min_px: target = min_px
         order_type  = mt5.ORDER_TYPE_SELL_LIMIT
@@ -1203,7 +1204,7 @@ def build_dashboard(state: dict):
     pos     = state.get("pos")
     pos_txt = Text()
     if mode == "waiting_fill" and signal:
-        elapsed   = int(time.time() - (state.get("order_placed_at") or time.time()))
+        elapsed   = int(time.time() - state.get("order_placed_at_epoch", time.time()))
         remaining = max(0, ORDER_EXPIRY_SEC - elapsed)
         pos_txt.append(f"  Pending #{state.get('order_ticket','?')}  "
                        f"Limit @ {signal['ob_price']:.2f}\n", style="white")
@@ -1540,7 +1541,8 @@ def run_bot():
                     state.update({
                         "mode":             "waiting_fill",
                         "order_ticket":     ticket,
-                        "order_placed_at":  time.time(),
+                        "order_placed_at":  datetime.now(timezone.utc).isoformat(),
+                        "order_placed_at_epoch": time.time(),
                     })
                     live.update(build_dashboard(state))
 
@@ -1550,7 +1552,7 @@ def run_bot():
                     entry_epoch     = None
 
                     while True:
-                        elapsed = time.time() - state["order_placed_at"]
+                        elapsed = time.time() - state.get("order_placed_at_epoch", time.time())
                         pending = mt5.orders_get(ticket=ticket)
 
                         if pending is None or len(pending) == 0:

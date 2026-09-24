@@ -905,12 +905,12 @@ def get_signal() -> dict | None:
 # ─────────────────────────────────────────────────────────────────────────────
 def floor_price(px: float, digits: int) -> float:
     q = Decimal(1).scaleb(-digits)
-    return float(Decimal(repr(px)).quantize(q, rounding=ROUND_DOWN))
+    return float(Decimal(str(float(px))).quantize(q, rounding=ROUND_DOWN))
 
 
 def ceil_price(px: float, digits: int) -> float:
     q = Decimal(1).scaleb(-digits)
-    return float(Decimal(repr(px)).quantize(q, rounding=ROUND_UP))
+    return float(Decimal(str(float(px))).quantize(q, rounding=ROUND_UP))
 
 
 def compute_tp_sl(limit_price: float, direction: str,

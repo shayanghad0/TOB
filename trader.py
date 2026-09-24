@@ -19,8 +19,15 @@ Execution (from order.py):
   - BUY LIMIT / SELL LIMIT only (bounce trades — no STOP orders)
   - ATR-based TP/SL with 1:2 RR (M30 ATR)
   - Broker-side TP/SL attached to every pending order
+  - TP1 (1×ATR) → partial close + move SL to entry (risk-free)
   - Emergency P&L cap as safety net
   - Position monitored with rich live dashboard
+
+Bale messenger (bale.md):
+──────────────────────────
+  - All lifecycle events sent to Bale in Persian
+    (start, order placed, fill, TP1, risk-free, full TP, SL, errors, stop)
+  - HTML report auto-sent every 1d / 1w / 1m
 
 Database (trade.json — same schema as trader.py):
 ───────────────────────────────────────────────────
@@ -29,7 +36,10 @@ Database (trade.json — same schema as trader.py):
   - HTML report exported on Ctrl+C
 """
 
+from __future__ import annotations          # PEP 604 (dict | None) on Python < 3.10
+
 import json, os, sys, time, uuid
+import urllib.request
 from collections import deque
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
@@ -125,9 +135,26 @@ CHECK_INTERVAL   = 1
 DEAL_RETRY_N     = 8
 DEAL_RETRY_SLEEP = 0.5
 
+# ── Bale Messenger (پیام‌رسان بله — bale.md) ─────────────────────────────────
+# توکن را از @botfather بگیرید و چت‌آیدی را از پیام به @userinfobot
+BALE_TOKEN    = os.environ.get("BALE_TOKEN",
+                  "1706777411:fhekC3ldVj6IiPPO-5PFprS6LViYeQJnQ24")
+BALE_CHAT_ID  = os.environ.get("BALE_CHAT_ID", "2075349597")
+BALE_ENABLED  = bool(BALE_TOKEN and BALE_CHAT_ID)
+BALE_TIMEOUT  = 6
+
+# ── TP1 + Risk-Free (حد سود جزئی و انتقال SL به ورود) ───────────────────────
+TP1_ATR_MULT       = 1.0     # TP1 = 1× ATR از قیمت ورود
+TP1_CLOSE_FRACTION = 0.5     # بستن نیمی از حجم در TP1
+
+# ── گزارش‌های دوره‌ای بله (HTML) ─────────────────────────────────────────────
+REPORT_INTERVALS = [("1d", 86400), ("1w", 604800), ("1m", 2592000)]
+REPORT_LABELS    = {"1d": "۱ روزه", "1w": "۱ هفته", "1m": "۱ ماه"}
+
 EXPORT_DIR      = "export"
 TRADE_DB_PATH   = os.path.join(EXPORT_DIR, "trade.json")
 OHLCV_DIR       = os.path.join(EXPORT_DIR, "ohlcv")
+REPORT_STATE_PATH = os.path.join(EXPORT_DIR, "report_state.json")
 os.makedirs(OHLCV_DIR, exist_ok=True)
 os.makedirs(EXPORT_DIR, exist_ok=True)
 
@@ -141,6 +168,69 @@ def log(msg: str, style: str = "white"):
     ts = datetime.now().strftime("%H:%M:%S")
     events.append((ts, msg, style))
     console.print(f"[dim]{ts}[/]  [{style}]{msg}[/{style}]")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# BALE MESSENGER  (پیام‌رسان بله — طبق bale.md)
+#   URL: https://tapi.bale.ai/bot<token>/METHOD_NAME
+#   متدها: sendMessage (متن) و sendDocument (گزارش HTML)
+# ─────────────────────────────────────────────────────────────────────────────
+def _bale_url(method: str) -> str:
+    return f"https://tapi.bale.ai/bot{BALE_TOKEN}/{method}"
+
+
+def _bale_post(method: str, data: bytes, content_type: str) -> dict | None:
+    req = urllib.request.Request(_bale_url(method), data=data,
+                                 headers={"Content-Type": content_type},
+                                 method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=BALE_TIMEOUT) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:
+        console.print(f"[dim red][ Bale ] {method} failed: {exc}[/]")
+        return None
+    if not body.get("ok"):
+        console.print(f"[dim red][ Bale ] {method}: "
+                      f"{body.get('error_code')} {body.get('description')}[/]")
+        return None
+    return body
+
+
+def bale(text: str) -> bool:
+    """ارسال پیام متنی فارسی به بله — هرگز Exception پرتاب نمی‌کند."""
+    if not BALE_ENABLED:
+        return False
+    if len(text) > 4096:
+        text = text[:4093] + "…"
+    payload = json.dumps({"chat_id": BALE_CHAT_ID, "text": text},
+                         ensure_ascii=False).encode("utf-8")
+    return _bale_post("sendMessage", payload,
+                      "application/json; charset=utf-8") is not None
+
+
+def bale_send_file(path: str, caption: str = "") -> bool:
+    """ارسال فایل (گزارش HTML) به بله با multipart/form-data."""
+    if not BALE_ENABLED or not os.path.exists(path):
+        return False
+    with open(path, "rb") as fh:
+        file_data = fh.read()
+
+    boundary = f"----obbot{uuid.uuid4().hex}"
+
+    def field(name: str, value: str) -> bytes:
+        return (f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n'
+                f"{value}\r\n").encode("utf-8")
+
+    head = (f'--{boundary}\r\nContent-Disposition: form-data; name="document"; '
+            f'filename="{os.path.basename(path)}"\r\n'
+            f"Content-Type: text/html\r\n\r\n").encode("utf-8")
+
+    body = b"".join([field("chat_id", str(BALE_CHAT_ID)),
+                     field("caption", caption),
+                     head, file_data, b"\r\n",
+                     f"--{boundary}--\r\n".encode("utf-8")])
+    return _bale_post("sendDocument", body,
+                      f"multipart/form-data; boundary={boundary}") is not None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -233,6 +323,10 @@ def db_create_trade(signal: dict) -> str:
         "position_ticket":    None,
         "entry_price":        None,
         "entry_time":         None,
+        "tp1_price":          None,
+        "tp1_hit_at":         None,
+        "tp1_pnl":            None,
+        "be_at":              None,
         "exit_price":         None,
         "exit_time":          None,
         "exit_reason":        None,
@@ -272,7 +366,7 @@ def get_blacklisted_zones() -> list:
     records   = _load_db()
     now_ts    = time.time()
     cutoff_s  = ZONE_BLACKLIST_HOURS * 3600
-    BAD_REASONS = {"sl", "sl_emergency", "cancelled", "order_failed",
+    BAD_REASONS = {"sl", "sl_be", "sl_emergency", "cancelled", "order_failed",
                    "no_fill", "expired_1h", "external"}
     LIVE_STATUS = {"pending", "waiting_fill", "open"}
     blacklisted = []
@@ -903,14 +997,19 @@ def get_signal() -> dict | None:
 # ─────────────────────────────────────────────────────────────────────────────
 # TP/SL COMPUTATION  (ATR-based, same as order.py's compute_tp_sl_prices)
 # ─────────────────────────────────────────────────────────────────────────────
+def _to_decimal(px) -> Decimal:
+    """px may be np.float64 — repr() would yield 'np.float64(4321.41)'."""
+    return Decimal(str(float(px)))
+
+
 def floor_price(px: float, digits: int) -> float:
     q = Decimal(1).scaleb(-digits)
-    return float(Decimal(repr(px)).quantize(q, rounding=ROUND_DOWN))
+    return float(_to_decimal(px).quantize(q, rounding=ROUND_DOWN))
 
 
 def ceil_price(px: float, digits: int) -> float:
     q = Decimal(1).scaleb(-digits)
-    return float(Decimal(repr(px)).quantize(q, rounding=ROUND_UP))
+    return float(_to_decimal(px).quantize(q, rounding=ROUND_UP))
 
 
 def compute_tp_sl(limit_price: float, direction: str,
@@ -1022,6 +1121,17 @@ def place_limit_order(signal: dict, sym_info, trade_id: str):
         sl_price        = round(sl_price, digits),
         status          = "waiting_fill",
     )
+
+    bale(f"📝 سفارش معلق ثبت شد\n"
+         f"نماد: {SYMBOL}\n"
+         f"نوع: {label}\n"
+         f"قیمت: {limit_price:.{digits}f}\n"
+         f"حد سود (TP): {tp_price:.{digits}f}\n"
+         f"حد ضرر (SL): {sl_price:.{digits}f}\n"
+         f"حجم: {LOT}\n"
+         f"امتیاز: {signal['score']}\n"
+         f"قوانین: {', '.join(signal['rules_passed'])}\n"
+         f"شناسه: {trade_id}")
     return res.order, label
 
 
@@ -1034,6 +1144,8 @@ def cancel_order(ticket: int, trade_id: str):
     if res and res.retcode == mt5.TRADE_RETCODE_DONE:
         log(f"Pending #{ticket} cancelled (1 h expiry)", "yellow")
         db_update_trade(trade_id, status="cancelled", exit_reason="expired_1h")
+        bale(f"⌛ سفارش منقضی شد و لغو گردید (۱ ساعت)\n"
+             f"تیکت: #{ticket}\nشناسه: {trade_id}")
         return True
     log(f"✗ cancel #{ticket}: {getattr(res,'comment','?')}", "red")
     return False
@@ -1059,6 +1171,94 @@ def close_position(ticket: int, direction: str, volume: float, sym_info):
     })
     ok = res is not None and res.retcode == mt5.TRADE_RETCODE_DONE
     return ok, close_px
+
+
+def close_partial(ticket: int, direction: str, volume: float, sym_info):
+    """بستن بخشی از پوزیشن (TP1) — نصف حجم."""
+    tick = mt5.symbol_info_tick(SYMBOL)
+    if tick is None:
+        return False, None
+    close_px = tick.bid if direction == "buy" else tick.ask
+    res = mt5.order_send({
+        "action":       mt5.TRADE_ACTION_DEAL,
+        "symbol":       SYMBOL,
+        "volume":       volume,
+        "type":         mt5.ORDER_TYPE_SELL if direction == "buy" else mt5.ORDER_TYPE_BUY,
+        "position":     ticket,
+        "price":        close_px,
+        "deviation":    DEVIATION,
+        "magic":        MAGIC,
+        "comment":      "OB TP1 partial",
+        "type_time":    mt5.ORDER_TIME_GTC,
+        "type_filling": get_filling_mode(sym_info),
+    })
+    ok = res is not None and res.retcode == mt5.TRADE_RETCODE_DONE
+    if not ok:
+        log(f"✗ TP1 partial close: {getattr(res,'comment','?')} "
+            f"(rc={getattr(res,'retcode','?')})", "red")
+    return ok, close_px
+
+
+def modify_sl(ticket: int, new_sl: float, tp_price: float) -> bool:
+    """انتقال حد ضرر به قیمت ورود (ریسک‌فری)."""
+    res = mt5.order_send({
+        "action":   mt5.TRADE_ACTION_SLTP,
+        "symbol":   SYMBOL,
+        "position": ticket,
+        "sl":       new_sl,
+        "tp":       tp_price,
+    })
+    ok = res is not None and res.retcode == mt5.TRADE_RETCODE_DONE
+    if not ok:
+        log(f"✗ modify SL → {new_sl}: {getattr(res,'comment','?')}", "red")
+    return ok
+
+
+def closed_pnl(ticket: int) -> float | None:
+    """جمع سود/ضرر معاملات خروجِ بسته‌شده تا این لحظه (با چند بار تلاش)."""
+    for _ in range(5):
+        deals = mt5.history_deals_get(position=ticket)
+        if deals:
+            out = [d for d in deals if d.entry == mt5.DEAL_ENTRY_OUT]
+            if out:
+                return round(sum(d.profit + d.commission + d.swap for d in out), 2)
+        time.sleep(0.3)
+    return None
+
+
+def notify_closed(trade_id: str, reason: str, info: dict, tp1_done: bool):
+    """اعلام فارسی وضعیت خروج پوزیشن در بله."""
+    pnl  = info.get("pnl")
+    px   = info.get("exit_price")
+    pnl_s = f"{pnl:+.2f} $" if pnl is not None else "؟"
+    px_s  = f"{px:.2f}" if px is not None else "؟"
+
+    if reason == "tp_emergency":
+        msg = "⚡ خروج اضطراری — سقف سود لمس شد"
+    elif reason == "sl_emergency":
+        msg = "⚡ خروج اضطراری — سقف ضرر لمس شد"
+    elif reason == "tp":
+        msg = "🏆 حد سود نهایی (Full TP) زده شد" + (" ✅ (پس از TP1)" if tp1_done else "")
+    elif reason == "sl_be":
+        msg = "🛡 حد ضررِ ریسک‌فری زده شد — سرمایه حفظ شد"
+    elif reason == "sl":
+        msg = "🛑 حد ضرر (SL) زده شد"
+    elif reason == "no_fill":
+        msg = "⏳ سفارش پر نشد و لغو شد"
+    elif reason == "order_failed":
+        msg = "❌ ثبت سفارش نزد بروکر ناموفق بود"
+    elif reason in ("manual", "mobile"):
+        msg = "🖐 خروج دستی"
+    elif reason == "bot":
+        msg = "🤖 خروج توسط ربات"
+    else:
+        msg = f"پوزیشن بسته شد ({reason})"
+
+    bale(f"{msg}\n"
+         f"نماد: {SYMBOL}\n"
+         f"قیمت خروج: {px_s}\n"
+         f"P/L: {pnl_s}\n"
+         f"شناسه: {trade_id}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1282,6 +1482,7 @@ def wait_cooldown(live, state: dict):
         state["mode"]               = "cooldown"
         state["cooldown_remaining"] = COOLDOWN_CANDLES - (len(seen) - 1)
         live.update(build_dashboard(state))
+        maybe_send_reports()
         time.sleep(5)
         t = last_bar()
         if t and t not in seen:
@@ -1471,6 +1672,94 @@ def export_html_report() -> str | None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# SCHEDULED REPORTS TO BALE  (گزارش ۱ روزه / ۱ هفته / ۱ ماه)
+# ─────────────────────────────────────────────────────────────────────────────
+def _iso_epoch(s) -> float | None:
+    if not s:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(s))
+    except (ValueError, TypeError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
+
+
+def period_stats(since_epoch: float) -> dict:
+    """آمار معاملات از یک بازهٔ زمانی مشخص تا الآن."""
+    records = _load_db()
+    total = closed_n = wins = losses = 0
+    gross = 0.0
+    for r in records:
+        ep = _iso_epoch(r.get("exit_time")) or _iso_epoch(r.get("created_at"))
+        if ep is None or ep < since_epoch:
+            continue
+        total += 1
+        if r.get("pnl") is not None:
+            closed_n += 1
+            gross += float(r["pnl"])
+            if r["pnl"] > 0:
+                wins += 1
+            else:
+                losses += 1
+    wr = wins / closed_n * 100.0 if closed_n else 0.0
+    return {"total": total, "closed": closed_n, "wins": wins,
+            "losses": losses, "gross": gross, "wr": wr}
+
+
+def _load_report_state() -> dict:
+    try:
+        with open(REPORT_STATE_PATH) as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _save_report_state(state: dict):
+    tmp = REPORT_STATE_PATH + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(state, f, indent=2)
+    os.replace(tmp, REPORT_STATE_PATH)
+
+
+def _report_caption(key: str, st: dict) -> str:
+    return (f"📊 گزارش معاملات {REPORT_LABELS[key]} — {SYMBOL}\n"
+            f"کل سفارش‌ها: {st['total']}\n"
+            f"بسته‌شده: {st['closed']}  🟢 {st['wins']} برد / 🔴 {st['losses']} باخت\n"
+            f"نرخ برد: {st['wr']:.1f}%\n"
+            f"سود خالص: {st['gross']:+.2f} $")
+
+
+def maybe_send_reports():
+    """در صورت رسیدن زمان هر بازه (۱ روز / ۱ هفته / ۱ ماه) گزارش HTML را به بله می‌فرستد."""
+    if not BALE_ENABLED:
+        return
+    now   = time.time()
+    state = _load_report_state()
+    dirty = False
+    for key, secs in REPORT_INTERVALS:
+        last = state.get(key)
+        if not isinstance(last, (int, float)):
+            state[key] = now          # اولین اجرا — از همین حالا بازه شروع می‌شود
+            dirty = True
+            continue
+        if now - last < secs:
+            continue
+        state[key] = now
+        dirty = True
+        try:
+            path = export_html_report()
+            if path and bale_send_file(path, _report_caption(key, period_stats(now - secs))):
+                log(f"[Bale] گزارش {REPORT_LABELS[key]} ارسال شد → {os.path.basename(path)}", "dim")
+        except Exception as exc:
+            log(f"[Bale] خطا در ارسال گزارش {REPORT_LABELS[key]}: {exc}", "dim red")
+    if dirty:
+        _save_report_state(state)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # MAIN LOOP
 # ─────────────────────────────────────────────────────────────────────────────
 def run_bot():
@@ -1483,6 +1772,13 @@ def run_bot():
     log(f"OB-Bot v1  {SYMBOL}  lot={LOT}  "
         f"TP×{TP_ATR_MULT}ATR  SL×{SL_ATR_MULT}ATR  "
         f"MIN_SCORE={MIN_SCORE}  RULES={list(RULE_WEIGHTS.keys())}", "bold yellow")
+
+    bale(f"🟢 ربات OB روشن شد (شروع فعالیت)\n"
+         f"نماد: {SYMBOL}  |  لات: {LOT}\n"
+         f"حد سود: {TP_ATR_MULT}×ATR  |  حد ضرر: {SL_ATR_MULT}×ATR\n"
+         f"حد سود ۱ (TP1): {TP1_ATR_MULT}×ATR + ریسک‌فری\n"
+         f"سقف سود/ضرر اضطراری: {MAX_PROFIT_USD}/{MAX_LOSS_USD} $\n"
+         f"گزارش خودکار بله: ۱ روز / ۱ هفته / ۱ ماه")
 
     state = {
         "mode":               "idle",
@@ -1503,6 +1799,7 @@ def run_bot():
                     # ── 1. ANALYSE ──────────────────────────────────────────
                     state.update({"mode": "analysing", "signal": None, "trade_id": None})
                     live.update(build_dashboard(state))
+                    maybe_send_reports()
                     log("Scanning: trend → OBs → rules → filters…", "cyan")
 
                     signal = get_signal()
@@ -1532,6 +1829,9 @@ def run_bot():
                     if ticket is None:
                         db_update_trade(trade_id, status="cancelled",
                                         exit_reason="order_failed")
+                        bale(f"❌ ثبت سفارش نزد بروکر ناموفق بود\n"
+                             f"جهت: {signal['direction'].upper()} @ {signal['ob_price']:.2f}\n"
+                             f"امتیاز: {signal['score']}\nشناسه: {trade_id}")
                         state.update({"mode": "idle", "stats": db_stats()})
                         live.update(build_dashboard(state))
                         time.sleep(30)
@@ -1552,6 +1852,7 @@ def run_bot():
                     while True:
                         elapsed = time.time() - state["order_placed_at"]
                         pending = mt5.orders_get(ticket=ticket)
+                        maybe_send_reports()
 
                         if pending is None or len(pending) == 0:
                             positions = mt5.positions_get(magic=MAGIC)
@@ -1561,6 +1862,7 @@ def run_bot():
                                         position_ticket = p.ticket
                                         entry_info = read_entry_info(position_ticket)
                                         entry_epoch = entry_info.get("entry_epoch")
+                                        entry_px = entry_info.get("entry_price") or p.price_open
                                         log(f"Filled! #{position_ticket}  "
                                             f"entry={entry_info.get('entry_price','?')}", "bold green")
                                         db_update_trade(trade_id,
@@ -1569,12 +1871,23 @@ def run_bot():
                                             entry_time      = entry_info.get("entry_time"),
                                             status          = "open",
                                         )
+                                        digits = sym_info.digits
+                                        bale(f"✅ سفارش پر شد (Fill) — پوزیشن باز شد\n"
+                                             f"نماد: {SYMBOL}\n"
+                                             f"جهت: {position_dir.upper()}\n"
+                                             f"قیمت ورود: {entry_px:.{digits}f}\n"
+                                             f"حجم: {p.volume}\n"
+                                             f"TP: {p.tp:.{digits}f}  |  SL: {p.sl:.{digits}f}\n"
+                                             f"تیکت: #{position_ticket}\nشناسه: {trade_id}")
                                         break
 
                             if position_ticket is None:
                                 log("Pending gone — no fill", "yellow")
                                 db_update_trade(trade_id, status="cancelled",
                                                 exit_reason="no_fill")
+                                bale(f"⏳ سفارش پر نشد و لغو شد (No Fill)\n"
+                                     f"جهت: {signal['direction'].upper()} @ {signal['ob_price']:.2f}\n"
+                                     f"شناسه: {trade_id}")
                             break
 
                         if elapsed >= ORDER_EXPIRY_SEC:
@@ -1594,13 +1907,20 @@ def run_bot():
                     state["mode"] = "in_position"
                     close_reason  = None
                     exit_info_dict= {}
+                    tp1_done      = False
+                    be_done       = False
+                    atr_hold      = signal.get("atr_m30", 8.0)
+                    emg           = None
 
                     while True:
+                        maybe_send_reports()
                         positions = mt5.positions_get(ticket=position_ticket)
 
                         if positions is None or len(positions) == 0:
                             exit_info_dict = read_exit_info(position_ticket)
                             close_reason   = exit_info_dict.get("exit_reason", "external")
+                            if close_reason == "sl" and be_done:
+                                close_reason = "sl_be"
                             log(f"Closed: reason={close_reason}  "
                                 f"exit={exit_info_dict.get('exit_price')}  "
                                 f"pnl=${exit_info_dict.get('pnl')}", "bold white")
@@ -1611,13 +1931,73 @@ def run_bot():
                         state["pos"] = pos
                         live.update(build_dashboard(state))
 
+                        # ── TP1: بستن نیمی از حجم + انتقال SL به ورود (ریسک‌فری)
+                        if not tp1_done:
+                            tick = mt5.symbol_info_tick(SYMBOL)
+                            if tick is not None:
+                                mkt = tick.bid if position_dir == "buy" else tick.ask
+                                if position_dir == "buy":
+                                    tp1_level = pos.price_open + atr_hold * TP1_ATR_MULT
+                                    if pos.tp:
+                                        tp1_level = min(tp1_level, pos.tp)
+                                    hit = mkt >= tp1_level
+                                else:
+                                    tp1_level = pos.price_open - atr_hold * TP1_ATR_MULT
+                                    if pos.tp:
+                                        tp1_level = max(tp1_level, pos.tp)
+                                    hit = mkt <= tp1_level
+
+                                if hit:
+                                    tp1_done = True
+                                    digits   = sym_info.digits
+                                    min_vol  = sym_info.volume_min or 0.01
+                                    half     = round(LOT * TP1_CLOSE_FRACTION, 2)
+                                    rest     = round(pos.volume - half, 2)
+                                    partial_ok = False
+                                    if half >= min_vol - 1e-9 and rest >= min_vol - 1e-9:
+                                        partial_ok, _ = close_partial(position_ticket,
+                                                                      position_dir,
+                                                                      half, sym_info)
+                                    if partial_ok:
+                                        p_pnl = closed_pnl(position_ticket) or 0.0
+                                        db_update_trade(trade_id,
+                                            tp1_price  = round(tp1_level, digits),
+                                            tp1_hit_at = datetime.now(timezone.utc).isoformat(),
+                                            tp1_pnl    = p_pnl,
+                                        )
+                                        log(f"TP1 hit @ {tp1_level:.{digits}f}  closed {half}  "
+                                            f"pnl=${p_pnl}", "bold green")
+                                        bale(f"🎯 حد سود ۱ (TP1) زده شد\n"
+                                             f"نماد: {SYMBOL}\n"
+                                             f"قیمت: {tp1_level:.{digits}f}\n"
+                                             f"حجم بسته‌شده: {half} از {pos.volume}\n"
+                                             f"P/L جزئی: {p_pnl:+.2f} $\n"
+                                             f"شناسه: {trade_id}")
+
+                                        # انتقال حد ضرر به قیمت ورود → ریسک‌فری
+                                        new_sl = round(pos.price_open, digits)
+                                        if modify_sl(position_ticket, new_sl, pos.tp):
+                                            be_done = True
+                                            db_update_trade(trade_id,
+                                                be_at=datetime.now(timezone.utc).isoformat())
+                                            log(f"SL → breakeven {new_sl:.{digits}f} (risk-free)",
+                                                "bold green")
+                                            bale(f"🛡 حد ضرر به قیمت ورود منتقل شد (ریسک‌فری)\n"
+                                                 f"SL جدید: {new_sl:.{digits}f}\n"
+                                                 f"با ضرر بسته نمی‌شود — فقط سودِ باقی‌مانده در خطر است\n"
+                                                 f"شناسه: {trade_id}")
+                                    else:
+                                        log("TP1 hit but partial close failed — SL untouched", "yellow")
+                                        bale(f"⚠️ حد سود ۱ (TP1) لمس شد اما بستن جزئی انجام نشد — "
+                                             f"SL تغییر نکرد\nشناسه: {trade_id}")
+
                         # Emergency safety net
                         if profit >= MAX_PROFIT_USD:
                             log(f"Emergency TP @ ${profit:+.2f}", "bold green")
-                            close_reason = "tp_emergency"; break
+                            emg = "tp_emergency"; close_reason = "tp_emergency"; break
                         if profit <= MAX_LOSS_USD:
                             log(f"Emergency SL @ ${profit:+.2f}", "bold red")
-                            close_reason = "sl_emergency"; break
+                            emg = "sl_emergency"; close_reason = "sl_emergency"; break
 
                         time.sleep(CHECK_INTERVAL)
 
@@ -1643,6 +2023,7 @@ def run_bot():
 
                     pnl_str = f"${final_pnl:+.2f}" if final_pnl is not None else "?"
                     log(f"[DB] {trade_id} → {close_reason}  {pnl_str}", "bold white")
+                    notify_closed(trade_id, emg or close_reason, exit_info_dict, tp1_done)
 
                     state.update({"pos": None, "mode": "idle", "stats": db_stats()})
                     live.update(build_dashboard(state))
@@ -1653,6 +2034,7 @@ def run_bot():
                 except Exception as exc:
                     log(f"Error: {exc}", "red")
                     console.print_exception()
+                    bale(f"⚠️ خطای ربات:\n{exc}\nتلاش مجدد در ۳۰ ثانیه…")
                     log("Retry in 30 s…", "dim")
                     time.sleep(30)
 
@@ -1667,6 +2049,13 @@ def run_bot():
                 log("No trades in DB — report skipped", "yellow")
         except Exception as exc:
             log(f"HTML export failed: {exc}", "red")
+        st = db_stats()
+        bale(f"🔴 ربات OB خاموش شد (پایان فعالیت)\n"
+             f"نماد: {SYMBOL}\n"
+             f"کل سفارش‌ها: {st['total']} | بسته‌شده: {st['closed']}\n"
+             f"🟢 {st['wins']} برد / 🔴 {st['losses']} باخت\n"
+             f"نرخ برد: {st['wr']:.1f}%\n"
+             f"سود خالص: {st['gross']:+.2f} $")
         mt5.shutdown()
         log("MT5 disconnected.", "dim")
         console.print()

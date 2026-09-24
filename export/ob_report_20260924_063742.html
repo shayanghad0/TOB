@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>OB-Bot Trade Report — 2026-09-24 06:37:42 UTC</title>
+<style>
+  :root {
+    --bg:#0d1117;--card:#161b22;--border:#30363d;--text:#e6edf3;
+    --dim:#8b949e;--green:#3fb950;--red:#f85149;--blue:#58a6ff;
+    --orange:#d29922;--purple:#bc8cff;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:"Segoe UI",system-ui,sans-serif;background:var(--bg);
+        color:var(--text);padding:24px;min-height:100vh}
+  h1{font-size:1.4rem;font-weight:600;margin-bottom:4px}
+  .sub{color:var(--dim);font-size:.85rem;margin-bottom:20px}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+          gap:12px;margin-bottom:24px}
+  .card{background:var(--card);border:1px solid var(--border);
+         border-radius:10px;padding:14px 16px}
+  .card .label{color:var(--dim);font-size:.75rem;text-transform:uppercase;
+                letter-spacing:.05em}
+  .card .value{font-size:1.45rem;font-weight:700;margin-top:4px;
+                font-variant-numeric:tabular-nums}
+  .value.pos{color:var(--green)}.value.neg{color:var(--red)}
+  .value.blue{color:var(--blue)}.value.orange{color:var(--orange)}
+  .table-wrap{background:var(--card);border:1px solid var(--border);
+               border-radius:10px;overflow-x:auto}
+  table{width:100%;border-collapse:collapse;font-size:.82rem}
+  th{text-align:left;padding:10px;color:var(--dim);font-weight:600;
+      font-size:.72rem;text-transform:uppercase;letter-spacing:.04em;
+      border-bottom:1px solid var(--border);background:#21262d;
+      position:sticky;top:0;white-space:nowrap}
+  td{padding:9px 10px;border-bottom:1px solid var(--border);white-space:nowrap}
+  tr:last-child td{border-bottom:none}
+  tr:hover td{background:rgba(88,166,255,.04)}
+  .mono{font-family:"Cascadia Code","Fira Code",Consolas,monospace}
+  .num{text-align:right;font-variant-numeric:tabular-nums}
+  .bold{font-weight:700}.dim{color:var(--dim)}.small{font-size:.75rem}
+  .pos{color:var(--green)}.neg{color:var(--red)}
+  .badge{display:inline-block;padding:2px 8px;border-radius:99px;
+          font-size:.7rem;font-weight:600;text-transform:uppercase}
+  .badge.ok{background:rgba(63,185,80,.15);color:var(--green)}
+  .badge.bad{background:rgba(248,81,73,.15);color:var(--red)}
+  .badge.live{background:rgba(88,166,255,.15);color:var(--blue)}
+  .badge.warn{background:rgba(210,153,34,.15);color:var(--orange)}
+  .badge.dim{background:rgba(139,148,158,.15);color:var(--dim)}
+  .badge.mid{background:rgba(188,140,255,.15);color:var(--purple)}
+  .dir{font-weight:700;font-size:.75rem;padding:2px 7px;border-radius:4px;
+        letter-spacing:.04em}
+  .dir.buy{background:rgba(63,185,80,.15);color:var(--green)}
+  .dir.sell{background:rgba(248,81,73,.15);color:var(--red)}
+  footer{margin-top:16px;color:var(--dim);font-size:.75rem;text-align:center}
+</style>
+</head>
+<body>
+  <h1>OB-Bot Trade Report</h1>
+  <p class="sub">XAUUSD · lot 0.02 · exported 2026-09-24 06:37:42 UTC · source export\trade.json</p>
+  <div class="cards">
+    <div class="card"><div class="label">Total Orders</div>
+      <div class="value blue">1</div></div>
+    <div class="card"><div class="label">Closed</div>
+      <div class="value">0</div></div>
+    <div class="card"><div class="label">Wins</div>
+      <div class="value pos">0</div></div>
+    <div class="card"><div class="label">Losses</div>
+      <div class="value neg">0</div></div>
+    <div class="card"><div class="label">Win Rate</div>
+      <div class="value neg">0.0%</div></div>
+    <div class="card"><div class="label">Net PnL</div>
+      <div class="value pos">$+0.00</div></div>
+    <div class="card"><div class="label">Avg / Trade</div>
+      <div class="value pos">$+0.00</div></div>
+    <div class="card"><div class="label">Open / Pending</div>
+      <div class="value orange">1</div></div>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th>ID</th><th>Dir</th><th>Status</th>
+        <th class="num">OB Zone</th><th class="num">Limit</th>
+        <th class="num">Entry</th><th class="num">Exit</th>
+        <th class="num">TP</th><th class="num">SL</th>
+        <th class="num">PnL $</th>
+        <th class="num">Score</th><th>Rules Passed</th>
+        <th class="num">IMB×</th><th>OB Type</th>
+        <th>Entry Time</th><th>Exit Time</th>
+      </tr></thead>
+      <tbody>
+        <tr>
+          <td class="mono">c1dd25b2</td>
+          <td><span class="dir sell">SELL</span></td>
+          <td><span class="badge warn">pending</span></td>
+          <td class="mono num">+4293.28</td>
+          <td class="mono num">—</td>
+          <td class="mono num">—</td>
+          <td class="mono num">—</td>
+          <td class="mono num">—</td>
+          <td class="mono num">—</td>
+          <td class="mono num  bold">—</td>
+          <td class="mono num">120</td>
+          <td class="mono dim small">near_sr, near_fz, broke_bms, imb_2x_partial, broke_opp_ob, ssr_position</td>
+          <td class="mono num">+3.90×</td>
+          <td class="mono dim small">—</td>
+          <td class="mono dim">—</td>
+          <td class="mono dim">—</td>
+        </tr></tbody>
+    </table>
+  </div>
+  <footer>OB-Bot v1 · generated by ob_bot.py</footer>
+</body>
+</html>

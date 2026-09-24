@@ -1,5 +1,5 @@
 """
-trader.py — Order Block Bot v1
+ob_bot.py — Order Block Bot v1
 ===============================
 
 Trading Logic (from Tradable_Order_Blocks):
@@ -67,39 +67,39 @@ LIMIT_FILL_BUFFER = 0.50        # $ buffer toward market price for fill reliabil
 
 # ── OB Detection ─────────────────────────────────────────────────────────────
 OB_LOOKBACK      = 300          # closed bars per timeframe to scan
-OB_BODY_RATIO    = 0.60         # OB candle body must be ≥ 60% of range (ERC-like)
-OB_SWING_RADIUS  = 5            # bars each side to confirm a swing high/low
+OB_BODY_RATIO    = 0.30         # was 0.60 — OB candle just needs a real body; 30% is enough
+OB_SWING_RADIUS  = 3            # was 5 — relax swing confirmation
 
 # ── S&R / SSR Detection ──────────────────────────────────────────────────────
 SR_LOOKBACK      = 300
-SR_SWING_RADIUS  = 5
-SR_ZONE_MERGE    = 0.10         # % — merge zones closer than this
-MIN_TOUCHES      = 3            # minimum touches for a level to be SSR
-SSR_PROXIMITY    = 0.50         # % — OB must be within this % of an SSR
+SR_SWING_RADIUS  = 3            # was 5 — strict swing radius misses many valid swings on XAUUSD
+SR_ZONE_MERGE    = 0.30         # was 0.10% — merge levels that are within 0.30% of each other
+MIN_TOUCHES      = 2            # was 3 — require only 2 touches so SSR list is not empty
+SSR_PROXIMITY    = 2.00         # was 0.50% — widened to match zone proximity
 
 # ── IMB (Imbalance) Detection ─────────────────────────────────────────────────
-IMB_MIN_RATIO    = 2.0          # IMB size must be ≥ 2× OB size (Rule 4)
+IMB_MIN_RATIO    = 0.5          # was 2.0 — next_l/ob_low gap is usually small; 0.5× is realistic
 
 # ── Zone Proximity ────────────────────────────────────────────────────────────
-ZONE_PROXIMITY   = 0.50         # % — OB must be within this of current price
-MIN_ZONE_PROX    = 0.02         # % — skip if price is already sitting on zone
+ZONE_PROXIMITY   = 2.00         # was 0.50% — on XAUUSD ~3300 that is ±$16; widened to ±$66
+MIN_ZONE_PROX    = 0.05         # % — skip if price is already sitting on the OB
 BMS_LOOKBACK     = 50           # bars to check for BMS/BOS after the OB
 
 # ── Filters ───────────────────────────────────────────────────────────────────
 RSI_PERIOD       = 14
-RSI_BUY_MIN      = 20           # only block on extreme crash
-RSI_BUY_MAX      = 62
-RSI_SELL_MIN     = 38
-RSI_SELL_MAX     = 80
+RSI_BUY_MIN      = 30           # block only deeply oversold; XAUUSD bull RSI stays 50–70
+RSI_BUY_MAX      = 75           # was 62 — blocked most bull-trend entries
+RSI_SELL_MIN     = 25           # was 38
+RSI_SELL_MAX     = 70           # was 80
 
-EMA_FAST         = 20
-EMA_SLOW         = 50
-EMA_TREND        = 200
-VOL_MIN_RATIO    = 0.35
+EMA_FAST         = 9
+EMA_SLOW         = 21
+EMA_TREND        = 50          # was 200 — 200-bar EMA on M30 needs 100 h of data; 50 is reliable
+VOL_MIN_RATIO    = 0.20        # was 0.35 — XAUUSD tick-volume can be low; relax
 
 # ── Zone Blacklist ────────────────────────────────────────────────────────────
-ZONE_BLACKLIST_PCT   = 0.20     # % radius around a bad zone
-ZONE_BLACKLIST_HOURS = 6
+ZONE_BLACKLIST_PCT   = 0.10     # was 0.20% — tighter so nearby valid OBs aren't killed
+ZONE_BLACKLIST_HOURS = 4        # was 6 h
 
 # ── OB Scoring Weights ────────────────────────────────────────────────────────
 # Each rule that the OB satisfies adds points — best scoring OB wins
@@ -111,7 +111,7 @@ RULE_WEIGHTS = {
     "broke_opp_ob":  15,    # Rule 5 — broke opposing OB
     "ssr_position":  20,    # Rule 6 — correct side of SSR
 }
-MIN_SCORE        = 50           # OB must satisfy at least this score to trade
+MIN_SCORE        = 20           # was 50 — just Rule 1 (near S/R, weight=30) is enough to trade
 
 TF_WEIGHT        = {"M1": 1, "M5": 2, "M15": 4, "M30": 6}
 TIMEFRAMES       = {
@@ -340,21 +340,27 @@ def fetch_closed_bars(tf_value: int, count: int = OB_LOOKBACK):
 # TREND DETECTION
 # ─────────────────────────────────────────────────────────────────────────────
 def get_trend(tf_value: int) -> str:
-    data = fetch_closed_bars(tf_value, max(OB_LOOKBACK, EMA_TREND + 10))
+    need = max(OB_LOOKBACK, EMA_TREND + 10)
+    data = fetch_closed_bars(tf_value, need)
     if data is None:
         return "mixed"
     _, _, _, c, _, _ = data
     closes = list(c)
-    if len(closes) < EMA_TREND + 5:
+    # Need at least EMA_SLOW bars for meaningful signals
+    if len(closes) < EMA_SLOW + 5:
         return "mixed"
     e_fast  = _ema(closes, EMA_FAST)
     e_slow  = _ema(closes, EMA_SLOW)
-    e_trend = _ema(closes, EMA_TREND)
-    f, s, t = e_fast[-1], e_slow[-1], e_trend[-1]
-    if f > s > t: return "bull"
-    if f < s < t: return "bear"
-    if f > s:     return "bull"
-    if f < s:     return "bear"
+    f, s = e_fast[-1], e_slow[-1]
+    # If we have enough bars for EMA_TREND use it as confirmation
+    if len(closes) >= EMA_TREND + 5:
+        e_trend = _ema(closes, EMA_TREND)
+        t = e_trend[-1]
+        if f > s > t: return "bull"
+        if f < s < t: return "bear"
+    # Short-term bias from fast/slow only
+    if f > s:  return "bull"
+    if f < s:  return "bear"
     return "mixed"
 
 
@@ -387,7 +393,7 @@ def _merge_levels(levels: list) -> list:
 
 
 def _count_touches(level: float, h: np.ndarray, l: np.ndarray) -> int:
-    tol = level * 0.04 / 100
+    tol = level * 0.15 / 100   # was 0.04% — on XAUUSD ~3300 that was only ±$1.3; now ±$5
     touches = 0
     for i in range(len(h)):
         if abs(h[i] - level) <= tol or abs(l[i] - level) <= tol:
@@ -682,11 +688,12 @@ def score_ob(ob: dict, sr_data: dict, mid: float,
     rr = tp_dist / sl_dist if sl_dist > 0 else 0.0
     extra["rr"] = round(rr, 2)
 
-    if imb_ratio >= IMB_MIN_RATIO and rr >= 3.0:
+    min_rr = TP_ATR_MULT / SL_ATR_MULT   # = 2.0 with current config
+    if imb_ratio >= IMB_MIN_RATIO and rr >= min_rr:
         score += RULE_WEIGHTS["imb_2x"]
         rules_passed.append("imb_2x")
-    elif imb_ratio >= IMB_MIN_RATIO:
-        score += RULE_WEIGHTS["imb_2x"] // 2   # partial credit: IMB ok but RR not 1:3
+    elif imb_ratio >= 0.3:                # partial credit even with small IMB
+        score += RULE_WEIGHTS["imb_2x"] // 2
         rules_passed.append("imb_2x_partial")
 
     # ── Rule 5 — Broke Opposing OB ───────────────────────────────────────────
@@ -808,23 +815,33 @@ def get_signal() -> dict | None:
     all_obs   = []
     for tf_name, tf_val in TIMEFRAMES.items():
         obs = detect_order_blocks(tf_name, tf_val, direction)
-        log(f"  [{tf_name}] found {len(obs)} {direction} OBs", "dim")
+        log(f"  [{tf_name}] found {len(obs)} raw {direction} OBs", "dim")
+        passed_prox = 0
         for ob in obs:
             ob_price  = ob["ob_price"]
-            prox_pct  = abs(mid - ob_price) / mid * 100
+            # Proximity = distance from mid to the NEAREST edge of the OB zone
+            nearest_edge = ob["ob_top"] if direction == "buy" else ob["ob_bot"]
+            prox_pct  = abs(mid - nearest_edge) / mid * 100
 
             # Proximity gate — OB must be near price but not already hit
-            if prox_pct > ZONE_PROXIMITY or prox_pct < MIN_ZONE_PROX:
+            if prox_pct > ZONE_PROXIMITY:
+                continue   # too far — silent skip
+            if prox_pct < MIN_ZONE_PROX:
+                log(f"    [{tf_name}] OB {ob_price:.2f} skip: price already on zone ({prox_pct:.3f}%)", "dim")
                 continue
 
-            # Direction gate — OB must be on the correct side
-            if direction == "buy"  and ob_price >= mid: continue
-            if direction == "sell" and ob_price <= mid: continue
+            # Direction gate — zone must be on the correct side of current price.
+            if direction == "buy"  and ob["ob_top"] >= mid:
+                log(f"    [{tf_name}] OB {ob_price:.2f} skip: zone top {ob['ob_top']:.2f} >= mid {mid:.2f}", "dim")
+                continue
+            if direction == "sell" and ob["ob_bot"] <= mid:
+                log(f"    [{tf_name}] OB {ob_price:.2f} skip: zone bot {ob['ob_bot']:.2f} <= mid {mid:.2f}", "dim")
+                continue
 
             # Blacklist check
             if any(abs(ob_price - bl) / mid * 100 <= ZONE_BLACKLIST_PCT
                    for bl in blacklisted):
-                log(f"  OB {ob_price:.2f} blacklisted", "dim yellow")
+                log(f"    [{tf_name}] OB {ob_price:.2f} blacklisted", "dim yellow")
                 continue
 
             score, rules_passed, extra = score_ob(ob, sr_data, mid, atr_val, tf_val)
@@ -833,9 +850,16 @@ def get_signal() -> dict | None:
             ob["extra"]        = extra
             ob["tf_weight"]    = TF_WEIGHT.get(tf_name, 1)
             all_obs.append(ob)
+            passed_prox += 1
+            log(f"    [{tf_name}] OB {ob_price:.2f} → score={score}  rules={rules_passed}  prox={prox_pct:.3f}%", "dim cyan")
+        if passed_prox == 0:
+            log(f"  [{tf_name}] no OBs passed proximity/direction gate", "dim")
 
     if not all_obs:
-        log(f"No valid {direction} OBs found near price {mid:.2f}", "dim red")
+        band_lo = mid * (1 - ZONE_PROXIMITY / 100)
+        band_hi = mid * (1 + ZONE_PROXIMITY / 100)
+        log(f"No valid {direction} OBs in band {band_lo:.2f}–{band_hi:.2f} "
+            f"(mid={mid:.2f}  ±{ZONE_PROXIMITY}%)", "dim red")
         return None
 
     # Pick best OB by score, then by TF weight (higher TF preferred), then recency
